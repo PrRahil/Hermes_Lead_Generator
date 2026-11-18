@@ -1,0 +1,65 @@
+# --- secrets & local env (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.cache/
+
+# --- packaging / build ---
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# --- local runtime data (keep folder via .gitkeep) ---
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite3
+data/exports/*
+!data/exports/.gitkeep
+data/imports/*
+!data/imports/.gitkeep
+!data/imports/sample_platform_export.csv
+
+# --- logs / temp ---
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- notebooks / local experiments (optional noise) ---
+.ipynb_checkpoints/

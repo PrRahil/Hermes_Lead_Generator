@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermes Lead Machine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">H</div>
+      <div>
+        <div class="brand-name">Hermes Lead Machine</div>
+        <div class="brand-sub">Continuous Data / AI lead hunt · auto-refresh 60s</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btn-cleanup" class="btn ghost danger">Cleanup leads</button>
+      <button id="btn-refresh" class="btn ghost">Refresh</button>
+      <button id="btn-scan" class="btn primary">One-shot scan</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="hero-strip">
+      <div>
+        <h1>Always-on local lead desk</h1>
+        <p>Start with <code>python -m hermes run</code>. Hermes rotates ICP keywords from <code>.env</code>, pulls Reddit / HN / Remotive / Arbeitnow / Serper / CSV imports, saves every cycle, and this dashboard updates every minute until you Ctrl+C.</p>
+        <div id="runner-status" class="runner-status">Loading runner…</div>
+        <div class="progress-wrap">
+          <div class="progress-label"><span>Strong leads target</span><span id="strong-progress-text">0 / 50</span></div>
+          <div class="progress-bar"><div id="strong-progress-fill"></div></div>
+        </div>
+      </div>
+      <div class="scan-box">
+        <label for="scan-query">Optional one-shot override (leave empty to use ICP keywords)</label>
+        <input id="scan-query" type="text" placeholder="Usually leave blank — ICP keywords drive hunting" />
+        <div class="toggles">
+          <label><input type="checkbox" id="use-demo" /> Demo corpus</label>
+          <label><input type="checkbox" id="use-reddit" checked /> Reddit</label>
+          <label><input type="checkbox" id="use-web" checked /> Web (Serper)</label>
+          <label><input type="checkbox" id="revenue-only" /> Revenue-fit only</label>
+        </div>
+        <div id="scan-status" class="status" hidden></div>
+      </div>
+    </section>
+
+    <section id="empty-state" class="panel empty-state" hidden>
+      <h2>No real leads yet</h2>
+      <p class="muted">Use <strong>Cleanup leads</strong> if demo seed is still here, then start continuous hunting: <code>python -m hermes run</code></p>
+    </section>
+
+    <section class="kpi-grid" id="kpi-grid"></section>
+
+    <section class="panel">
+      <h2>Action queue</h2>
+      <p class="muted small">Prioritized strong / replied / negotiation leads.</p>
+      <div id="action-queue" class="action-queue"></div>
+    </section>
+
+    <section class="charts">
+      <article class="panel">
+        <h2>Post → deal funnel</h2>
+        <canvas id="funnelChart" height="180"></canvas>
+      </article>
+      <article class="panel">
+        <h2>Platform mix</h2>
+        <canvas id="platformChart" height="180"></canvas>
+      </article>
+      <article class="panel">
+        <h2>Revenue bands</h2>
+        <canvas id="revenueChart" height="180"></canvas>
+      </article>
+      <article class="panel">
+        <h2>Pipeline $ by platform</h2>
+        <canvas id="valueChart" height="180"></canvas>
+      </article>
+    </section>
+
+    <section class="split">
+      <article class="panel grow">
+        <div class="panel-head">
+          <h2>Lead desk</h2>
+          <div class="filters">
+            <select id="filter-stage">
+              <option value="">All stages</option>
+              <option>lead</option>
+              <option>qualified</option>
+              <option>outreach</option>
+              <option>replied</option>
+              <option>negotiation</option>
+              <option>won</option>
+              <option>lost</option>
+              <option>suppressed</option>
+            </select>
+            <select id="filter-platform">
+              <option value="">All platforms</option>
+              <option>linkedin</option>
+              <option>upwork</option>
+              <option>fiverr</option>
+              <option>wellfound</option>
+              <option>clutch</option>
+              <option>toptal</option>
+              <option>indeed</option>
+              <option>reddit</option>
+              <option>hackernews</option>
+              <option>remotive</option>
+              <option>arbeitnow</option>
+              <option>github</option>
+              <option>web</option>
+              <option>manual</option>
+            </select>
+            <input id="min-score" type="number" min="0" max="100" value="0" title="Min fit score" />
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="leads-table">
+            <thead>
+              <tr>
+                <th>Score</th>
+                <th>Company</th>
+                <th>Requirement</th>
+                <th>Platform</th>
+                <th>Stage</th>
+                <th>Est. deal</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+
+      <aside class="panel detail" id="detail-panel">
+        <h2>Lead detail</h2>
+        <p class="muted">Select a lead to inspect buyer, score reasons, outreach draft, and deal next step.</p>
+        <div id="detail-body"></div>
+      </aside>
+    </section>
+
+    <section class="panel">
+      <h2>Recent scan cycles</h2>
+      <div id="scans" class="scans"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Auto-refresh every 60s · leave terminal open for 24–36h hunts</span>
+    <span id="health-line"></span>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
