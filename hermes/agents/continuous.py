@@ -10,12 +10,17 @@ from hermes.db import Lead, init_db, session_scope
 from hermes.runtime import BUS
 
 
-def count_strong_leads(min_score: float = 70.0) -> int:
+def count_strong_leads(min_score: float = 45.0) -> int:
+    """Strong *listings* (actionable opportunities), not only engaged leads."""
     init_db()
     with session_scope() as session:
         return (
             session.query(Lead)
-            .filter(Lead.suppressed.is_(False), Lead.fit_score >= min_score)
+            .filter(
+                Lead.suppressed.is_(False),
+                Lead.expired.is_(False),
+                Lead.fit_score >= min_score,
+            )
             .count()
         )
 
@@ -81,6 +86,7 @@ def run_continuous(
                     use_hn=True,
                     use_remotive=True,
                     use_arbeitnow=True,
+                    use_remoteok=True,
                     import_paths=imports,
                     limit_per_source=limit_per_source,
                     use_llm=use_llm,

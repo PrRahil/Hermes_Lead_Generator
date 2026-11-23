@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional
 
 
 @dataclass
 class RawSignal:
-    """A public posting / job / RFP signal before it becomes a CRM lead."""
+    """A public posting / job / RFP signal before it becomes a CRM listing."""
 
     platform: str
     title: str
@@ -21,9 +22,12 @@ class RawSignal:
     contact_name: str = ""
     contact_title: str = ""
     contact_email: str = ""
+    contact_phone: str = ""
     requirement: str = ""
     tags: List[str] = field(default_factory=list)
     acquisition_source: str = ""
+    posted_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
     meta: dict = field(default_factory=dict)
 
     def text_blob(self) -> str:

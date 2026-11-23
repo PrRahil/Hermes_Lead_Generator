@@ -107,6 +107,13 @@ class Lead(Base):
     suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
     suppress_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # listing = crawled opportunity; lead = we interacted (sent/replied/etc.)
+    record_kind: Mapped[str] = mapped_column(String(32), default="listing", index=True)
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expired: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    phone_captured: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -224,6 +231,13 @@ def get_engine():
 def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+    try:
+        from hermes.db_migrate import migrate_schema
+
+        migrate_schema()
+    except Exception:
+        # Fresh DBs already have columns from create_all
+        pass
 
 
 @contextmanager

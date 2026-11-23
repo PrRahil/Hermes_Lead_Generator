@@ -37,17 +37,34 @@ class Settings(BaseSettings):
     # Continuous hunter
     scan_interval_sec: int = 180
     strong_lead_target: int = 50
-    strong_lead_min_score: float = 70.0
+    # Light ICP — public posts rarely clear 70; 45 is actionable
+    strong_lead_min_score: float = 45.0
+    qualify_min_score: float = 40.0
+    listing_deal_min_score: float = 40.0
+    listing_ttl_days: int = 21
+    keep_expired_days: int = 7
     # Keep LLM off by default during long hunts (templates only)
     hermes_use_llm: bool = False
+
+    # Camoufox / cookie browsing (optional)
+    camoufox_enabled: bool = False
+    camoufox_headless: bool = True
+    camoufox_min_delay_sec: float = 4.0
+
+    # SMTP optional for "Send draft"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
 
     icp_industries: str = (
         "technology,software,saas,data,artificial intelligence,"
         "machine learning,analytics,cloud,fintech,healthtech"
     )
-    icp_min_employees: int = 20
-    icp_max_employees: int = 5000
-    icp_min_revenue_usd: int = 1_000_000
+    icp_min_employees: int = 5
+    icp_max_employees: int = 10000
+    icp_min_revenue_usd: int = 250_000
     icp_target_titles: str = (
         "CTO,VP Engineering,Head of Data,Head of AI,ML Engineer,"
         "Data Engineer,Founder,CEO,Product Manager,Director of Analytics,"
@@ -111,19 +128,28 @@ PLATFORMS = [
     "toptal",
     "indeed",
     "reddit",
+    "hackernews",
+    "remotive",
+    "arbeitnow",
+    "remoteok",
+    "dice",
+    "glassdoor",
+    "otta",
+    "greenhouse",
+    "lever",
+    "builtin",
     "github",
     "manual",
     "web",
 ]
 
 PIPELINE_STAGES = [
-    "signal",
-    "lead",
-    "qualified",
-    "outreach",
+    "listing",
+    "contacted",
     "replied",
     "negotiation",
     "won",
     "lost",
+    "expired",
     "suppressed",
 ]

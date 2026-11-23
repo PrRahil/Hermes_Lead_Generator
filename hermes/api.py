@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, Optional
 
 from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -10,12 +10,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from hermes import __app_name__, __version__
-from hermes.agents.cleanup import cleanup_leads
+from hermes.agents.cleanup import cleanup_leads, run_expiry_pass
 from hermes.agents.continuous import count_strong_leads
-from hermes.agents.pipeline import advance_lead, run_scan
+from hermes.agents.pipeline import advance_lead, backfill_missing_drafts, mark_as_lead, run_scan
 from hermes.analytics import dashboard_kpis, list_leads
-from hermes.config import DATA_DIR, ROOT_DIR, get_settings
+from hermes.browser import camoufox_available, warmup_note
+from hermes.config import DATA_DIR, get_settings
 from hermes.db import Lead, OutreachMessage, get_session, init_db
+from hermes.integrations import list_integrations
+from hermes.outreach_send import prepare_send
 from hermes.runtime import BUS
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -36,7 +39,13 @@ class ScanRequest(BaseModel):
 
 
 class CleanupRequest(BaseModel):
-    mode: str = Field("all", pattern="^(all|demo)$")
+    mode: str = Field("all", pattern="^(all|demo|expired)$")
+
+
+class SendRequest(BaseModel):
+    subject_variant: str = "a"
+    mark_sent: bool = True
+    use_smtp: bool = False
 
 
 def create_app() -> FastAPI:
@@ -70,6 +79,10 @@ def create_app() -> FastAPI:
             "strong_leads": strong,
             "strong_lead_target": settings.strong_lead_target,
             "strong_lead_min_score": settings.strong_lead_min_score,
+            "camoufox_available": camoufox_available(),
+            "camoufox_enabled": settings.camoufox_enabled,
+            "camoufox_hint": warmup_note(),
+            "brand": "Intellytics",
         }
 
     @app.get("/api/kpis")
@@ -82,6 +95,8 @@ def create_app() -> FastAPI:
         platform: Optional[str] = None,
         min_score: float = Query(0, ge=0, le=100),
         revenue_fit_only: bool = False,
+        record_kind: Optional[str] = None,
+        include_expired: bool = False,
         session: Session = Depends(db_dep),
     ):
         return {
@@ -91,6 +106,8 @@ def create_app() -> FastAPI:
                 platform=platform,
                 min_score=min_score,
                 revenue_fit_only=revenue_fit_only,
+                record_kind=record_kind,
+                include_expired=include_expired,
             )
         }
 
@@ -109,8 +126,9 @@ def create_app() -> FastAPI:
             .one_or_none()
         )
         if not lead:
-            raise HTTPException(404, "Lead not found")
+            raise HTTPException(404, "Listing/lead not found")
         from hermes.analytics import _serialize_lead
+        from hermes.outreach_send import build_mailto, build_tel
 
         data = _serialize_lead(lead)
         data["activities"] = [
@@ -134,6 +152,11 @@ def create_app() -> FastAPI:
             }
             for o in lead.outreach
         ]
+        msg = lead.outreach[0] if lead.outreach else None
+        data["send"] = {
+            "mailto": build_mailto(lead, msg) if msg else None,
+            "tel": build_tel(lead),
+        }
         return data
 
     @app.post("/api/leads/{lead_id}/stage")
@@ -147,6 +170,28 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
         session.flush()
+        from hermes.analytics import _serialize_lead
+
+        return _serialize_lead(lead)
+
+    @app.post("/api/leads/{lead_id}/send")
+    def send_draft(lead_id: int, payload: Annotated[SendRequest, Body()]):
+        result = prepare_send(
+            lead_id,
+            subject_variant=payload.subject_variant,
+            mark_sent=payload.mark_sent,
+            use_smtp=payload.use_smtp,
+        )
+        if not result.get("ok"):
+            raise HTTPException(400, result.get("error", "Send failed"))
+        return result
+
+    @app.post("/api/leads/{lead_id}/convert")
+    def convert_to_lead(lead_id: int, session: Session = Depends(db_dep)):
+        try:
+            lead = mark_as_lead(session, lead_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
         from hermes.analytics import _serialize_lead
 
         return _serialize_lead(lead)
@@ -166,29 +211,39 @@ def create_app() -> FastAPI:
         )
         return {
             "signals_found": stats.signals_found,
-            "leads_created": stats.leads_created,
+            "leads_created": stats.listings_created,
+            "listings_created": stats.listings_created,
             "leads_skipped_existing": stats.leads_skipped,
             "qualified": stats.qualified,
             "outreach_drafted": stats.outreach_drafted,
+            "expired": stats.expired,
             "suppressed": stats.suppressed,
             "deals_opened": stats.deals_opened,
             "notes": stats.notes,
             "strong_leads": count_strong_leads(settings.strong_lead_min_score),
             "hint": (
-                "0 new leads usually means these signals were already in the DB."
-                if stats.leads_created == 0 and stats.signals_found > 0
-                else (
-                    "No signals this cycle — continuous mode will rotate the next ICP keyword."
-                    if stats.signals_found == 0
-                    else ""
-                )
+                "0 new listings — signals already stored or stale at crawl time."
+                if stats.listings_created == 0 and stats.signals_found > 0
+                else ""
             ),
         }
 
     @app.post("/api/cleanup")
     def cleanup(payload: Annotated[CleanupRequest, Body()]):
-        result = cleanup_leads(mode=payload.mode)
-        return result
+        return cleanup_leads(mode=payload.mode)
+
+    @app.post("/api/expire")
+    def expire():
+        return run_expiry_pass()
+
+    @app.post("/api/backfill-drafts")
+    def backfill_drafts():
+        n = backfill_missing_drafts(use_llm=False)
+        return {"drafts_created": n}
+
+    @app.get("/api/integrations")
+    def integrations():
+        return {"items": list_integrations()}
 
     @app.get("/api/runner")
     def runner():
