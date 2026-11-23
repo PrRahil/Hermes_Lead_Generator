@@ -399,13 +399,23 @@ def backfill_missing_drafts(*, use_llm: bool = False) -> int:
     init_db()
     created = 0
     with session_scope() as session:
+        # Only rows that do not already have an outreach draft
+        existing_ids = {
+            row[0]
+            for row in session.query(OutreachMessage.lead_id).distinct().all()
+        }
         rows = (
             session.query(Lead)
-            .filter(Lead.suppressed.is_(False), Lead.expired.is_(False))
+            .filter(
+                Lead.suppressed.is_(False),
+                Lead.expired.is_(False),
+                Lead.stage.notin_(["suppressed", "expired", "lost"]),
+            )
             .all()
         )
         for lead in rows:
-            before = session.query(OutreachMessage).filter(OutreachMessage.lead_id == lead.id).count()
+            if lead.id in existing_ids:
+                continue
             ensure_outreach_draft(
                 session,
                 lead,
@@ -413,9 +423,9 @@ def backfill_missing_drafts(*, use_llm: bool = False) -> int:
                 lead.contact,
                 use_llm=use_llm,
             )
-            after = session.query(OutreachMessage).filter(OutreachMessage.lead_id == lead.id).count()
-            if after > before:
-                created += 1
+            created += 1
+            if created and created % 100 == 0:
+                session.flush()
     return created
 
 

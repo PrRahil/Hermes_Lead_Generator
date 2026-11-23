@@ -101,6 +101,18 @@ def scan(
     console.print(table)
 
 
+def _startup_maintenance(*, use_llm: bool = False) -> None:
+    """Backfill drafts then expire/prune stale listings before hunting."""
+    console.print("[bold]Startup maintenance[/bold]")
+    init_db()
+    console.print("1/2 Backfilling Intellytics cold drafts…")
+    drafted = backfill_missing_drafts(use_llm=use_llm)
+    console.print(f"   [green]Drafts created/ensured:[/green] {drafted}")
+    console.print("2/2 Expiring stale listings + pruning weak noise…")
+    expired = run_expiry_pass()
+    console.print(f"   [green]Expiry pass:[/green] {expired}")
+
+
 @app.command("run")
 def run(
     host: Optional[str] = typer.Option(None, "--host"),
@@ -114,11 +126,13 @@ def run(
     stop_at_target: bool = typer.Option(
         False, "--stop-at-target", help="Exit when strong-lead target is reached"
     ),
+    skip_startup: bool = typer.Option(
+        False, "--skip-startup", help="Skip backfill+expiry bootstrap (not recommended)"
+    ),
 ) -> None:
     """Start dashboard + continuous lead hunting until you press Ctrl+C.
 
-    Intended for a long local session (24–36h). Every cycle saves to SQLite;
-    the dashboard refreshes itself every minute.
+    On every start: backfill missing drafts → expire/prune stale listings → hunt.
     """
     import uvicorn
 
@@ -127,13 +141,19 @@ def run(
     h = host or settings.hermes_host
     p = port or settings.hermes_port
     tgt = target or settings.strong_lead_target
+    use_llm = llm or settings.hermes_use_llm
+
+    if not skip_startup:
+        _startup_maintenance(use_llm=use_llm)
+    else:
+        console.print("[yellow]Skipped startup backfill/expiry[/yellow]")
 
     def _hunt() -> None:
         try:
             run_continuous(
                 interval_sec=interval,
                 use_demo=demo,
-                use_llm=llm or settings.hermes_use_llm,
+                use_llm=use_llm,
                 strong_target=tgt,
                 stop_when_target=stop_at_target,
             )

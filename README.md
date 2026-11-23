@@ -42,6 +42,11 @@ python -m hermes cleanup --mode all -y
 python -m hermes run
 ```
 
+On every `run` start Hermes automatically:
+1. backfills missing Intellytics cold drafts  
+2. expires/prunes stale listings  
+3. starts continuous hunting + dashboard  
+
 Open **http://127.0.0.1:8787** (auto-refreshes every 60s).
 
 Stop anytime with `Ctrl+C`. Data stays in `data/hermes_leads.db`.
