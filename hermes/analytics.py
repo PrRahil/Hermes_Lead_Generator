@@ -6,161 +6,127 @@ from typing import Any, Dict, List
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
+from hermes.config import get_settings
 from hermes.db import Company, Deal, Lead, OutreachMessage, ScanRun
 
 
 def dashboard_kpis(session: Session) -> Dict[str, Any]:
-    leads: List[Lead] = (
+    settings = get_settings()
+    rows: List[Lead] = (
         session.query(Lead)
         .options(joinedload(Lead.company), joinedload(Lead.contact), joinedload(Lead.deal))
         .all()
     )
+    active = [l for l in rows if not l.suppressed and not l.expired and l.stage != "lost"]
+    listings = [l for l in active if (l.record_kind or "listing") == "listing"]
+    leads = [l for l in active if l.record_kind == "lead"]
     deals: List[Deal] = session.query(Deal).all()
     outreach: List[OutreachMessage] = session.query(OutreachMessage).all()
 
-    active = [l for l in leads if not l.suppressed and l.stage != "lost"]
-    stage_counts = Counter(l.stage for l in leads)
-    platform_counts = Counter(l.source_platform for l in leads)
+    stage_counts = Counter(l.stage for l in active)
+    platform_counts = Counter(l.source_platform for l in active)
     revenue_bands = Counter(
         (l.company.revenue_band if l.company and l.company.revenue_band else "unknown")
-        for l in leads
+        for l in active
     )
-    confidence = Counter(l.confidence for l in leads)
 
     pipeline_value = sum((l.estimated_deal_value or 0) for l in active)
     weighted_pipeline = sum(
         int((d.value_usd or 0) * (d.probability or 0)) for d in deals if d.status == "open"
     )
     won_value = sum(d.value_usd for d in deals if d.status == "won")
-    qualified = sum(1 for l in leads if l.fit_score >= 55 and not l.suppressed)
-    revenue_fit = sum(1 for l in leads if l.revenue_fit)
-    high_conf = sum(1 for l in leads if l.confidence == "high" and not l.suppressed)
-    from hermes.config import get_settings
-
-    settings = get_settings()
-    hot = sum(1 for l in active if l.fit_score >= 75)
     strong = sum(1 for l in active if l.fit_score >= settings.strong_lead_min_score)
-    needs_review = sum(1 for l in active if l.review_required)
-    ready_to_send = sum(
-        1 for l in active if l.stage == "outreach" and any(o.status == "draft" for o in l.outreach)
+    with_draft = len({o.lead_id for o in outreach})
+    missing_draft = sum(
+        1
+        for l in active
+        if not any(o.lead_id == l.id for o in outreach)
     )
-    awaiting_reply = sum(1 for l in active if l.stage == "outreach")
-    in_negotiation = sum(1 for l in active if l.stage in {"replied", "negotiation"})
+    hot = sum(1 for l in active if l.fit_score >= 65)
     avg_deal = int(pipeline_value / len(active)) if active else 0
-    icp_pass_rate = _pct(revenue_fit, max(1, len([l for l in leads if not l.suppressed])))
 
     conversion = {
-        "signal_to_lead": 100.0 if leads else 0.0,
-        "lead_to_qualified": _pct(
-            sum(1 for l in leads if l.stage in {"qualified", "outreach", "replied", "negotiation", "won"}),
-            max(1, len([l for l in leads if not l.suppressed])),
-        ),
-        "qualified_to_outreach": _pct(
-            sum(1 for l in leads if l.stage in {"outreach", "replied", "negotiation", "won"}),
-            max(
-                1,
-                sum(
-                    1
-                    for l in leads
-                    if l.stage in {"qualified", "outreach", "replied", "negotiation", "won"}
-                ),
-            ),
-        ),
-        "outreach_to_reply": _pct(
+        "listing_to_lead": _pct(len(leads), max(1, len(listings) + len(leads))),
+        "lead_to_reply": _pct(
             sum(1 for l in leads if l.stage in {"replied", "negotiation", "won"}),
-            max(1, sum(1 for l in leads if l.stage in {"outreach", "replied", "negotiation", "won"})),
+            max(1, len(leads)),
         ),
         "reply_to_won": _pct(
             sum(1 for l in leads if l.stage == "won"),
             max(1, sum(1 for l in leads if l.stage in {"replied", "negotiation", "won"})),
         ),
+        "outreach_to_reply": _pct(
+            sum(1 for l in leads if l.stage in {"replied", "negotiation", "won"}),
+            max(1, sum(1 for l in leads if l.stage in {"contacted", "outreach", "replied", "negotiation", "won"})),
+        ),
+        "reply_to_won_legacy": 0.0,
     }
 
     funnel = [
-        {"stage": "All leads", "count": len([l for l in leads if not l.suppressed])},
-        {
-            "stage": "Qualified+",
-            "count": sum(
-                1
-                for l in leads
-                if l.stage in {"qualified", "outreach", "replied", "negotiation", "won"}
-            ),
-        },
-        {
-            "stage": "Outreach+",
-            "count": sum(
-                1 for l in leads if l.stage in {"outreach", "replied", "negotiation", "won"}
-            ),
-        },
-        {
-            "stage": "Replied+",
-            "count": sum(1 for l in leads if l.stage in {"replied", "negotiation", "won"}),
-        },
+        {"stage": "Active listings", "count": len(listings)},
+        {"stage": "Strong fit", "count": strong},
+        {"stage": "Drafts ready", "count": with_draft},
+        {"stage": "Engaged leads", "count": len(leads)},
         {"stage": "Won", "count": stage_counts.get("won", 0)},
     ]
 
-    recent_scans = (
-        session.query(ScanRun).order_by(ScanRun.started_at.desc()).limit(8).all()
-    )
-
-    top_leads = sorted(
-        active,
-        key=lambda x: (x.fit_score, x.estimated_deal_value or 0),
-        reverse=True,
-    )[:12]
-
+    recent_scans = session.query(ScanRun).order_by(ScanRun.started_at.desc()).limit(8).all()
     action_queue = sorted(
-        [l for l in active if l.stage in {"lead", "qualified", "outreach", "replied", "negotiation"}],
+        [l for l in active if l.stage not in {"won", "lost", "expired", "suppressed"}],
         key=lambda x: (
-            0 if x.stage == "negotiation" else 1 if x.stage == "replied" else 2 if x.fit_score >= 75 else 3,
+            0 if x.record_kind == "lead" and x.stage in {"replied", "negotiation"} else 1,
+            0 if x.fit_score >= settings.strong_lead_min_score else 1,
             -(x.fit_score or 0),
+            -(x.created_at.timestamp() if x.created_at else 0),
         ),
-    )[:8]
+    )[:10]
 
     by_platform_value = defaultdict(int)
-    for l in leads:
-        if l.suppressed:
-            continue
+    for l in active:
         by_platform_value[l.source_platform] += l.estimated_deal_value or 0
 
     return {
         "totals": {
+            "listings": len(listings),
             "leads": len(leads),
-            "active_leads": len(active),
+            "active_records": len(active),
+            "active_leads": len(active),  # legacy alias for UI
             "companies": session.query(func.count(Company.id)).scalar() or 0,
-            "qualified": qualified,
-            "revenue_fit": revenue_fit,
-            "high_confidence": high_conf,
-            "hot_leads": hot,
             "strong_leads": strong,
+            "strong_listings": strong,
             "strong_lead_target": settings.strong_lead_target,
             "strong_lead_min_score": settings.strong_lead_min_score,
-            "needs_review": needs_review,
-            "ready_to_send": ready_to_send,
-            "awaiting_reply": awaiting_reply,
-            "in_negotiation": in_negotiation,
+            "hot_leads": hot,
+            "drafts_ready": with_draft,
+            "missing_drafts": missing_draft,
+            "expired": sum(1 for l in rows if l.expired),
+            "revenue_fit": sum(1 for l in active if l.revenue_fit),
+            "icp_pass_rate": _pct(strong, max(1, len(active))),
             "outreach_drafts": len(outreach),
+            "ready_to_send": with_draft,
+            "in_negotiation": sum(1 for l in leads if l.stage in {"replied", "negotiation"}),
+            "awaiting_reply": sum(1 for l in leads if l.stage in {"contacted", "outreach"}),
             "open_deals": sum(1 for d in deals if d.status == "open"),
             "won_deals": sum(1 for d in deals if d.status == "won"),
             "pipeline_value": pipeline_value,
             "weighted_pipeline": weighted_pipeline,
             "won_value": won_value,
             "avg_deal_value": avg_deal,
-            "icp_pass_rate": icp_pass_rate,
             "avg_fit_score": round(
-                (sum(l.fit_score for l in leads) / len(leads)) if leads else 0,
+                (sum(l.fit_score for l in active) / len(active)) if active else 0,
                 1,
             ),
+            "listing_ttl_days": settings.listing_ttl_days,
         },
         "stages": dict(stage_counts),
         "platforms": dict(platform_counts),
         "platform_pipeline_value": dict(by_platform_value),
         "revenue_bands": dict(revenue_bands),
-        "confidence": dict(confidence),
+        "confidence": dict(Counter(l.confidence for l in active)),
         "conversion": conversion,
         "funnel": funnel,
         "action_queue": [_serialize_lead(l) for l in action_queue],
-        "top_leads": [_serialize_lead(l) for l in top_leads],
+        "top_leads": [_serialize_lead(l) for l in action_queue[:12]],
         "recent_scans": [
             {
                 "id": s.id,
@@ -174,7 +140,11 @@ def dashboard_kpis(session: Session) -> Dict[str, Any]:
             }
             for s in recent_scans
         ],
-        "empty": len(leads) == 0,
+        "empty": len(active) == 0,
+        "naming": {
+            "listing": "Crawled opportunity (not a lead yet)",
+            "lead": "Engaged — we sent or they replied",
+        },
     }
 
 
@@ -187,6 +157,7 @@ def _pct(num: int, den: int) -> float:
 def _serialize_lead(lead: Lead) -> Dict[str, Any]:
     return {
         "id": lead.id,
+        "record_kind": lead.record_kind or "listing",
         "stage": lead.stage,
         "fit_score": lead.fit_score,
         "confidence": lead.confidence,
@@ -201,6 +172,11 @@ def _serialize_lead(lead: Lead) -> Dict[str, Any]:
         "score_reasons": lead.score_reasons or [],
         "tags": lead.tags or [],
         "review_required": lead.review_required,
+        "expired": bool(lead.expired),
+        "expires_at": lead.expires_at.isoformat() if lead.expires_at else None,
+        "posted_at": lead.posted_at.isoformat() if lead.posted_at else None,
+        "created_at": lead.created_at.isoformat() if lead.created_at else None,
+        "phone_captured": lead.phone_captured,
         "company": {
             "id": lead.company.id if lead.company else None,
             "name": lead.company.name if lead.company else None,
@@ -216,6 +192,7 @@ def _serialize_lead(lead: Lead) -> Dict[str, Any]:
             "title": lead.contact.title if lead.contact else None,
             "email": lead.contact.email if lead.contact else None,
             "email_status": lead.contact.email_status if lead.contact else None,
+            "phone": lead.contact.phone if lead.contact else None,
         },
         "deal": {
             "id": lead.deal.id if lead.deal else None,
@@ -236,10 +213,14 @@ def list_leads(
     platform: str | None = None,
     min_score: float = 0,
     revenue_fit_only: bool = False,
+    record_kind: str | None = None,
+    include_expired: bool = False,
 ) -> List[Dict[str, Any]]:
     q = session.query(Lead).options(
         joinedload(Lead.company), joinedload(Lead.contact), joinedload(Lead.deal)
     )
+    if not include_expired:
+        q = q.filter(Lead.expired.is_(False))
     if stage:
         q = q.filter(Lead.stage == stage)
     if platform:
@@ -248,5 +229,7 @@ def list_leads(
         q = q.filter(Lead.fit_score >= min_score)
     if revenue_fit_only:
         q = q.filter(Lead.revenue_fit.is_(True))
-    rows = q.order_by(Lead.fit_score.desc(), Lead.created_at.desc()).all()
+    if record_kind:
+        q = q.filter(Lead.record_kind == record_kind)
+    rows = q.order_by(Lead.created_at.desc(), Lead.fit_score.desc()).all()
     return [_serialize_lead(r) for r in rows]

@@ -354,3 +354,35 @@ tbody tr:hover, tbody tr.active { background: rgba(61,184,160,0.08); }
   .kpi-grid { grid-template-columns: 1fr; }
   .topbar { flex-direction: column; align-items: flex-start; gap: 0.7rem; }
 }
+
+.chips, .kind-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chip {
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font: 500 0.8rem var(--font-body);
+  cursor: pointer;
+}
+.chip.active { border-color: var(--teal); background: rgba(61,184,160,0.15); color: var(--teal); }
+.outreach-edit {
+  width: 100%;
+  min-height: 160px;
+  margin-top: 0.5rem;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0.7rem;
+  font: 0.84rem/1.45 var(--font-body);
+}
+.integrations { display: grid; gap: 0.45rem; }
+.integ-row {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0,0,0,0.16);
+  font-size: 0.85rem;
+}
+a.btn { text-decoration: none; display: inline-flex; align-items: center; }

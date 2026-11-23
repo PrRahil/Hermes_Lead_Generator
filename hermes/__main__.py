@@ -9,9 +9,9 @@ from rich.console import Console
 from rich.table import Table
 
 from hermes import __app_name__, __version__
-from hermes.agents.cleanup import cleanup_leads
+from hermes.agents.cleanup import cleanup_leads, run_expiry_pass
 from hermes.agents.continuous import count_strong_leads, run_continuous
-from hermes.agents.pipeline import run_scan
+from hermes.agents.pipeline import backfill_missing_drafts, run_scan
 from hermes.config import DATA_DIR, get_settings
 from hermes.db import init_db
 
@@ -33,17 +33,31 @@ def init_database() -> None:
 
 @app.command("cleanup")
 def cleanup(
-    mode: str = typer.Option("all", "--mode", help="all | demo"),
+    mode: str = typer.Option("all", "--mode", help="all | demo | expired"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
-    """Delete demo seed leads or wipe the whole local CRM."""
-    if not yes:
-        confirm = typer.confirm(f"Delete leads with mode={mode}? This cannot be undone.")
+    """Delete demo/all rows, or run expiry prune (mode=expired)."""
+    if mode != "expired" and not yes:
+        confirm = typer.confirm(f"Delete with mode={mode}? This cannot be undone.")
         if not confirm:
             console.print("Cancelled.")
             raise typer.Exit()
     result = cleanup_leads(mode=mode)
     console.print(f"[green]Cleanup done[/green]: {result}")
+
+
+@app.command("expire")
+def expire() -> None:
+    """Mark calendar-expired listings and prune weak stale rows."""
+    result = run_expiry_pass()
+    console.print(f"[green]Expiry pass[/green]: {result}")
+
+
+@app.command("backfill-drafts")
+def backfill_drafts() -> None:
+    """Ensure every active listing has an Intellytics cold draft."""
+    n = backfill_missing_drafts(use_llm=False)
+    console.print(f"[green]Drafts created:[/green] {n}")
 
 
 @app.command("scan")

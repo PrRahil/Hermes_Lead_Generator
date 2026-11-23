@@ -44,9 +44,21 @@ python -m hermes run
 
 Open **http://127.0.0.1:8787** (auto-refreshes every 60s).
 
-Stop anytime with `Ctrl+C`. Leads stay saved in `data/hermes_leads.db`.
+Stop anytime with `Ctrl+C`. Data stays in `data/hermes_leads.db`.
 
-ICP keywords in `.env` are the hunt topics — you do **not** need `-q`.
+### Listings vs leads
+- **Listing** = crawled post (not a customer yet). Every listing gets an Intellytics cold draft.
+- **Lead** = you interacted (Send / mailto / reply stages).
+
+### Useful commands
+```powershell
+python -m hermes expire              # calendar-expire stale listings
+python -m hermes backfill-drafts     # ensure every listing has a draft
+python -m hermes cleanup --mode expired -y
+```
+
+ICP keywords in `.env` are the hunt topics — you do **not** need `-q`.  
+Strong-fit threshold defaults to **45** (light ICP). See `docs/INTEGRATIONS.md` for Apollo / Camoufox / CRM notes.
 
 ## Manual steps on your side
 

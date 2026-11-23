@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
+from sqlalchemy.orm import Session
+
+from hermes.config import get_settings
 from hermes.db import (
     Activity,
     Company,
@@ -11,7 +16,108 @@ from hermes.db import (
     Suppression,
     init_db,
     session_scope,
+    utcnow,
 )
+
+
+def expire_stale_listings(session: Session) -> int:
+    """Mark calendar-expired listings and prune low-value old noise."""
+    settings = get_settings()
+    now = utcnow()
+    expired_n = 0
+
+    due = (
+        session.query(Lead)
+        .filter(
+            Lead.expired.is_(False),
+            Lead.suppressed.is_(False),
+            Lead.record_kind == "listing",
+            Lead.expires_at.isnot(None),
+            Lead.expires_at < now,
+        )
+        .all()
+    )
+    for row in due:
+        row.expired = True
+        row.stage = "expired"
+        session.add(
+            Activity(
+                lead_id=row.id,
+                kind="expired",
+                message=f"Listing expired on {row.expires_at.isoformat() if row.expires_at else 'n/a'}",
+            )
+        )
+        expired_n += 1
+
+    # Soft TTL for listings missing expires_at
+    cutoff = now - timedelta(days=settings.listing_ttl_days)
+    undated = (
+        session.query(Lead)
+        .filter(
+            Lead.expired.is_(False),
+            Lead.suppressed.is_(False),
+            Lead.record_kind == "listing",
+            Lead.expires_at.is_(None),
+            Lead.created_at < cutoff,
+        )
+        .all()
+    )
+    for row in undated:
+        row.expired = True
+        row.stage = "expired"
+        row.expires_at = now
+        expired_n += 1
+        session.add(
+            Activity(lead_id=row.id, kind="expired", message="Auto-expired by listing TTL")
+        )
+
+    # Keep dashboard meaningful: archive weak old listings beyond keep window
+    keep_cutoff = now - timedelta(days=settings.keep_expired_days)
+    weak = (
+        session.query(Lead)
+        .filter(
+            Lead.expired.is_(True),
+            Lead.record_kind == "listing",
+            Lead.fit_score < settings.strong_lead_min_score,
+            Lead.updated_at < keep_cutoff,
+        )
+        .limit(500)
+        .all()
+    )
+    for row in weak:
+        # hard-delete weak expired listings (not engaged leads)
+        lids = [row.id]
+        session.query(Activity).filter(Activity.lead_id.in_(lids)).delete(synchronize_session=False)
+        session.query(OutreachMessage).filter(OutreachMessage.lead_id.in_(lids)).delete(
+            synchronize_session=False
+        )
+        session.query(Deal).filter(Deal.lead_id.in_(lids)).delete(synchronize_session=False)
+        session.query(Lead).filter(Lead.id.in_(lids)).delete(synchronize_session=False)
+
+    return expired_n
+
+
+def run_expiry_pass() -> dict:
+    init_db()
+    with session_scope() as session:
+        n = expire_stale_listings(session)
+        active = (
+            session.query(Lead)
+            .filter(Lead.expired.is_(False), Lead.suppressed.is_(False))
+            .count()
+        )
+        leads = session.query(Lead).filter(Lead.record_kind == "lead", Lead.expired.is_(False)).count()
+        listings = (
+            session.query(Lead)
+            .filter(Lead.record_kind == "listing", Lead.expired.is_(False), Lead.suppressed.is_(False))
+            .count()
+        )
+        return {
+            "expired_marked": n,
+            "active_records": active,
+            "active_listings": listings,
+            "active_leads": leads,
+        }
 
 
 def cleanup_leads(*, mode: str = "all") -> dict:
@@ -19,9 +125,13 @@ def cleanup_leads(*, mode: str = "all") -> dict:
 
     mode:
       - all: wipe leads/deals/outreach/companies/contacts/scans
-      - demo: remove leads whose acquisition_source/tags look like demo/seed
+      - demo: remove *.example seed rows
+      - expired: run expiry + prune weak expired listings
     """
     init_db()
+    if mode == "expired":
+        return {"mode": "expired", "result": run_expiry_pass()}
+
     deleted = {
         "leads": 0,
         "deals": 0,
@@ -36,24 +146,15 @@ def cleanup_leads(*, mode: str = "all") -> dict:
             leads = session.query(Lead).all()
             demo_ids = []
             for lead in leads:
-                tags = [str(t).lower() for t in (lead.tags or [])]
-                src = (lead.acquisition_source or "").lower()
-                if (
-                    "demo" in tags
-                    or src.startswith("linkedin:jobs")
-                    and ".example" in ((lead.company.domain if lead.company else "") or "")
-                    or (lead.company and (lead.company.domain or "").endswith(".example"))
-                ):
-                    demo_ids.append(lead.id)
-            # Broader: any company on *.example from seed corpus
-            for lead in leads:
                 domain = (lead.company.domain if lead.company else "") or ""
-                if domain.endswith(".example") and lead.id not in demo_ids:
+                if domain.endswith(".example"):
                     demo_ids.append(lead.id)
             demo_ids = list(set(demo_ids))
             if demo_ids:
                 deleted["activities"] = (
-                    session.query(Activity).filter(Activity.lead_id.in_(demo_ids)).delete(synchronize_session=False)
+                    session.query(Activity)
+                    .filter(Activity.lead_id.in_(demo_ids))
+                    .delete(synchronize_session=False)
                 )
                 deleted["outreach"] = (
                     session.query(OutreachMessage)
@@ -66,7 +167,6 @@ def cleanup_leads(*, mode: str = "all") -> dict:
                 deleted["leads"] = (
                     session.query(Lead).filter(Lead.id.in_(demo_ids)).delete(synchronize_session=False)
                 )
-            # orphan companies/contacts with .example domains
             deleted["contacts"] = (
                 session.query(Contact)
                 .filter(Contact.email.ilike("%.example"))
@@ -79,7 +179,6 @@ def cleanup_leads(*, mode: str = "all") -> dict:
             )
             return {"mode": mode, "deleted": deleted}
 
-        # full wipe
         deleted["activities"] = session.query(Activity).delete()
         deleted["outreach"] = session.query(OutreachMessage).delete()
         deleted["deals"] = session.query(Deal).delete()

@@ -9,6 +9,7 @@ from hermes.sources.demo import DemoSource
 from hermes.sources.hackernews import HackerNewsSource
 from hermes.sources.import_csv import CsvImportSource
 from hermes.sources.reddit import RedditSource
+from hermes.sources.remoteok import RemoteOKSource
 from hermes.sources.remotive import RemotiveSource
 from hermes.sources.web_search import WebSearchSource
 
@@ -23,6 +24,7 @@ def gather_signals(
     use_hn: bool = True,
     use_remotive: bool = True,
     use_arbeitnow: bool = True,
+    use_remoteok: bool = True,
     import_paths: Optional[Iterable[Path]] = None,
 ) -> List[RawSignal]:
     connectors: List[SourceConnector] = []
@@ -36,6 +38,8 @@ def gather_signals(
         connectors.append(RemotiveSource())
     if use_arbeitnow:
         connectors.append(ArbeitnowSource())
+    if use_remoteok:
+        connectors.append(RemoteOKSource())
     if use_web:
         connectors.append(WebSearchSource())
     for path in import_paths or []:
@@ -66,4 +70,5 @@ __all__ = [
     "HackerNewsSource",
     "RemotiveSource",
     "ArbeitnowSource",
+    "RemoteOKSource",
 ]

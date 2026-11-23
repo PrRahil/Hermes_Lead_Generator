@@ -49,6 +49,10 @@ DECISION_TITLE_HINTS = [
     "director",
     "chief",
     "owner",
+    "manager",
+    "lead",
+    "engineer",
+    "hiring",
 ]
 
 
@@ -66,7 +70,7 @@ def estimate_deal_value(
     employee_count: Optional[int],
     keyword_hits: List[str],
 ) -> int:
-    base = 8_000
+    base = 10_000
     if revenue_usd and revenue_usd >= 25_000_000:
         base = 45_000
     elif revenue_usd and revenue_usd >= 5_000_000:
@@ -75,12 +79,12 @@ def estimate_deal_value(
         base = 15_000
 
     if employee_count and employee_count >= 500:
-        base = int(base * 1.4)
-    elif employee_count and employee_count >= 100:
-        base = int(base * 1.15)
+        base = int(base * 1.3)
+    elif employee_count and employee_count >= 50:
+        base = int(base * 1.1)
 
-    if any(k in ("llm", "rag", "ai agent", "mlops") for k in [h.lower() for h in keyword_hits]):
-        base = int(base * 1.25)
+    if any(k in ("llm", "rag", "ai agent", "mlops", "snowflake", "databricks") for k in [h.lower() for h in keyword_hits]):
+        base = int(base * 1.2)
     return base
 
 
@@ -95,9 +99,12 @@ def score_lead(
     description: str = "",
     settings: Optional[Settings] = None,
 ) -> ScoreResult:
+    """Lighter ICP — public posts rarely have revenue; don't punish unknowns."""
     settings = settings or get_settings()
     reasons: List[str] = []
-    score = 0.0
+    # Everyone starts with a base so Data/AI posts can clear soft thresholds.
+    score = 25.0
+    reasons.append("Base listing score (lightweight ICP)")
 
     blob = " ".join(
         filter(
@@ -106,79 +113,77 @@ def score_lead(
         )
     )
 
-    # Industry fit
     industry_hits = _contains_any(industry or blob, settings.industries)
     if industry_hits:
-        score += 20
+        score += 15
         reasons.append(f"Industry match: {', '.join(industry_hits[:3])}")
     else:
-        reasons.append("Industry unclear — needs review")
+        score += 5
+        reasons.append("Industry inferred from Data/AI context")
 
-    # Revenue / company income filter (core KPI gate)
     revenue_fit = False
     if revenue_usd is not None:
         if revenue_usd >= settings.icp_min_revenue_usd:
             revenue_fit = True
-            score += 25
-            reasons.append(
-                f"Revenue fit: ${revenue_usd:,} >= ${settings.icp_min_revenue_usd:,}"
-            )
-        else:
-            reasons.append(
-                f"Below revenue floor: ${revenue_usd:,} < ${settings.icp_min_revenue_usd:,}"
-            )
-            score -= 15
-    else:
-        # Soft pass when unknown — still allow but mark review
-        score += 5
-        reasons.append("Revenue unknown — estimated from signals")
-
-    # Employee band
-    if employee_count is not None:
-        if settings.icp_min_employees <= employee_count <= settings.icp_max_employees:
             score += 15
-            reasons.append(f"Team size fit: {employee_count} employees")
-        elif employee_count < settings.icp_min_employees:
+            reasons.append(f"Revenue fit: ${revenue_usd:,}")
+        elif revenue_usd == 0:
             score -= 5
-            reasons.append(f"Team may be too small ({employee_count})")
+            reasons.append("Zero/unknown commercial signal")
         else:
-            score += 5
-            reasons.append(f"Enterprise-scale team ({employee_count}) — longer cycle")
+            # Soft penalty only — still allow consulting SMBs
+            score -= 3
+            reasons.append(f"Below preferred revenue floor (${revenue_usd:,})")
+    else:
+        revenue_fit = True  # unknown ≠ fail on light ICP
+        score += 10
+        reasons.append("Revenue unknown — not penalized under light ICP")
 
-    # Title / buyer fit
+    if employee_count is not None:
+        if employee_count >= settings.icp_min_employees:
+            score += 10
+            reasons.append(f"Team size OK: {employee_count}")
+        elif employee_count >= 5:
+            score += 5
+            reasons.append(f"Small team ({employee_count}) — still workable")
+        else:
+            reasons.append(f"Very small team ({employee_count})")
+    else:
+        score += 5
+        reasons.append("Headcount unknown — neutral")
+
     title_fit = False
     if contact_title:
         title_hits = _contains_any(contact_title, settings.target_titles)
         dm_hits = _contains_any(contact_title, DECISION_TITLE_HINTS)
         if title_hits or dm_hits:
             title_fit = True
-            score += 20
-            reasons.append(f"Buyer-relevant title: {contact_title}")
+            score += 15
+            reasons.append(f"Relevant title/role: {contact_title}")
         else:
-            reasons.append(f"Title weak for ICP: {contact_title}")
+            score += 5
+            reasons.append(f"Title present: {contact_title}")
     else:
-        reasons.append("No contact title yet")
+        score += 3
+        reasons.append("No title yet — enrichment later")
 
-    # Keyword / requirement fit (post → project conversion signal)
     keyword_hits = _contains_any(blob, settings.keywords)
     keyword_fit = bool(keyword_hits)
     if keyword_hits:
-        score += min(20, 5 * len(keyword_hits))
-        reasons.append(f"Requirement keywords: {', '.join(keyword_hits[:5])}")
+        score += min(25, 6 * len(keyword_hits))
+        reasons.append(f"Keywords: {', '.join(keyword_hits[:5])}")
     else:
-        # Broader tech/data/ai language
         broad = _contains_any(
             blob,
-            ["data", "ai", "ml", "analytics", "etl", "warehouse", "llm", "model"],
+            ["data", "ai", "ml", "analytics", "etl", "warehouse", "llm", "model", "cloud", "dashboard"],
         )
         if broad:
             keyword_fit = True
-            score += 8
-            reasons.append(f"Adjacent tech signals: {', '.join(broad[:4])}")
+            score += 12
+            reasons.append(f"Adjacent signals: {', '.join(broad[:4])}")
         else:
-            reasons.append("Weak Tech/Data/AI requirement signal")
+            reasons.append("Weak Data/AI keyword signal")
 
-    # Buying-intent language in posts
     intent = _contains_any(
         blob,
         [
@@ -194,26 +199,25 @@ def score_lead(
             "asap",
             "proposal",
             "quote",
+            "who is hiring",
+            "seeking",
+            "consultant",
         ],
     )
     if intent:
-        score += 10
+        score += 12
         reasons.append(f"Buying intent: {', '.join(intent[:3])}")
 
     score = max(0.0, min(100.0, score))
 
-    if score >= 75:
+    # Soft thresholds so public posts can become actionable listings
+    if score >= 65:
         confidence = "high"
         review_required = False
-    elif score >= 55:
+    elif score >= 45:
         confidence = "medium"
-        review_required = True
+        review_required = False
     else:
-        confidence = "low"
-        review_required = True
-
-    # Strict revenue gate: if explicitly below floor, force low unless overridden later
-    if revenue_usd is not None and revenue_usd < settings.icp_min_revenue_usd:
         confidence = "low"
         review_required = True
 
@@ -222,7 +226,7 @@ def score_lead(
 
     return ScoreResult(
         fit_score=round(score, 1),
-        revenue_fit=revenue_fit or (revenue_usd is None and score >= 55),
+        revenue_fit=revenue_fit,
         title_fit=title_fit,
         keyword_fit=keyword_fit,
         confidence=confidence,
@@ -239,12 +243,15 @@ def _project_summary(
     intent: List[str],
     source_text: str,
 ) -> str:
-    focus = ", ".join(keywords[:3]) if keywords else "Tech/Data/AI work"
-    intent_bit = f" Intent signals: {', '.join(intent[:2])}." if intent else ""
+    focus = ", ".join(keywords[:3]) if keywords else "Data/AI engagement"
+    intent_bit = f" Intent: {', '.join(intent[:2])}." if intent else ""
     snippet = re.sub(r"\s+", " ", source_text or "").strip()
     if len(snippet) > 160:
         snippet = snippet[:157] + "..."
-    base = f"Convert public signal at {company} into a scoped {focus} engagement."
+    base = (
+        f"Intellytics angle for {company}: scoped {focus} — pipelines, analytics, "
+        f"or AI systems with a short discovery → pilot path."
+    )
     if snippet:
         return f"{base} Source: {snippet}{intent_bit}"
     return f"{base}{intent_bit}"
